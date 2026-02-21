@@ -1,4 +1,4 @@
-🛠️ Roadmap
+  Roadmap
 Phase 1 — ML Trust Core (v0.1)
 
  Model wrapper (scikit-learn)
