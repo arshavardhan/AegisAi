@@ -1,208 +1,223 @@
-🛡️ AegisAI
-Unified AI Reliability & Trust Framework for ML and LLM Systems
+# 🛡️ AegisAI
 
-A lightweight, modular trust layer that evaluates uncertainty, distribution shift, safety, and reliability for AI systems before returning predictions.
+**A lightweight, modular reliability and trust layer for machine-learning predictions.**
 
-🚨 Why AegisAI?
+AegisAI evaluates a model's prediction using multiple signals—confidence, predictive uncertainty, and out-of-distribution (OOD) risk—before exposing a structured trust report to downstream applications.
 
-Modern AI systems — both traditional ML models and Large Language Models (LLMs) — return predictions without measuring trustworthiness.
+> **AegisAI does not replace your model. It evaluates the reliability of its predictions.**
 
-Most systems:
+## Why AegisAI?
 
-❌ Don’t quantify uncertainty properly
+A model can return a prediction even when it is uncertain or when the input differs substantially from the data it learned from. AegisAI adds an explicit reliability layer:
 
-❌ Don’t detect out-of-distribution (OOD) inputs
+```text
+Input
+  ↓
+ML Model
+  ↓
+AegisAI Reliability Engine
+  ├── Confidence
+  ├── Entropy / Uncertainty
+  └── OOD Detection
+  ↓
+Trust Score
+  ↓
+Risk Level + Recommendation
+  ↓
+Structured Prediction Report
+```
 
-❌ Don’t monitor drift
+## Current status
 
-❌ Don’t provide structured trust scores
+**v0.1.0 — ML Reliability Core**
 
-❌ Fail silently in production
+The current implementation focuses deliberately on classification models with probability support, primarily scikit-learn estimators.
 
-AegisAI solves this gap.
+### Implemented
 
-🎯 Vision
+- Scikit-learn model wrapper
+- Maximum-probability confidence estimation
+- Normalized Shannon entropy
+- Z-score based OOD detection
+- Normalized OOD risk for trust scoring
+- Configurable trust-score aggregation
+- Risk classification
+- Action recommendation
+- Structured Pydantic prediction reports
+- Batch prediction
+- Feature-shape validation
+- Automated tests
+- GitHub Actions CI
+- Python package configuration
 
-AegisAI acts as a reliability layer between AI models and end users.
+### Planned
 
-Instead of:
+- Model probability calibration
+- Additional OOD detectors
+- Regression reliability
+- LLM reliability adapters
+- Safety evaluation modules
+- Production drift monitoring
+- FastAPI service
+- Docker deployment
+- Plugin architecture
 
-Input → Model → Prediction
+These are intentionally outside the v0.1 core so that the current API remains small and testable.
 
-AegisAI enables:
+## Installation
 
-Input → Model → Reliability Engine → Trust Report → Verified Output
+Clone the repository and install it in editable mode:
 
-We don’t replace your model.
-We evaluate it.
+```bash
+pip install -e ".[dev]"
+```
 
-🧠 Core Objectives
+Or install the runtime package only:
 
-📊 Measure prediction confidence
+```bash
+pip install .
+```
 
-📉 Detect distribution shift (OOD inputs)
+## Quick start
 
-🔍 Quantify uncertainty
+```python
+from sklearn.datasets import load_iris
+from sklearn.linear_model import LogisticRegression
 
-🛡️ Add safety checks
+from aegis import AegisModel
 
-📈 Monitor trust over time
+X, y = load_iris(return_X_y=True)
 
-🧾 Generate structured trust reports
+classifier = LogisticRegression(max_iter=500)
+classifier.fit(X, y)
 
-For both:
+model = AegisModel(classifier)
+model.fit(X)
 
-Traditional ML models (e.g., scikit-learn, PyTorch)
+report = model.predict(X[:1])
 
-Large Language Models (LLMs)
+print(report.summary())
+print(report.to_json())
+```
 
-🧩 Planned Architecture
-1️⃣ Model Wrapper Layer
+Example report fields:
 
-Standard interface for:
+```text
+prediction
+confidence
+uncertainty
+ood
+ood_score
+trust_score
+risk_level
+recommendation
+```
 
-ML classifiers/regressors
+For multiple samples:
 
-LLM APIs
+```python
+reports = model.predict_batch(X[:10])
+```
 
-2️⃣ Uncertainty Engine
+## Trust scoring
 
-Probability-based confidence scoring
+AegisAI combines normalized reliability signals into a score in `[0, 1]`.
 
-Entropy-based uncertainty
+The v0.1 default weights are:
 
-Multi-sample LLM consistency scoring
+| Signal | Weight |
+|---|---:|
+| Confidence | 0.50 |
+| Uncertainty | 0.30 |
+| OOD risk | 0.20 |
 
-3️⃣ OOD Detection
+Drift is **not** included in the v0.1 score because live drift monitoring is not yet connected to the prediction pipeline.
 
-Feature distribution comparison
+## OOD detection
 
-Z-score anomaly detection
+The current detector learns feature-wise mean and standard deviation from reference data and calculates the maximum absolute feature Z-score for each new sample.
 
-Embedding similarity for LLM prompts
+The raw Z-score is intentionally kept separate from the normalized OOD risk used by the trust scorer.
 
-4️⃣ Safety Layer
+This is a lightweight baseline detector, not a claim of universal OOD detection performance.
 
-Toxicity detection (LLM)
+## Project structure
 
-Sensitive attribute checks (ML)
+```text
+AegisAi/
+├── aegis/
+│   ├── config/
+│   ├── core/
+│   ├── drift/
+│   ├── ood/
+│   ├── recommendation/
+│   ├── scoring/
+│   ├── uncertainty/
+│   └── wrappers/
+├── tests/
+├── .github/workflows/
+├── pyproject.toml
+├── LICENSE
+└── README.md
+```
 
-5️⃣ Trust Score Aggregator
+## Development
 
-Composite score combining:
+Run the test suite with:
 
-Confidence
+```bash
+pytest
+```
 
-OOD risk
+GitHub Actions runs the tests against Python 3.10, 3.11, and 3.12.
 
-Safety status
+## Design principles
 
-Drift indicators
+1. **Model-agnostic core** — reliability logic should not depend on a specific estimator implementation.
+2. **Explicit signals** — confidence, uncertainty, and distribution risk remain separately observable.
+3. **Deterministic decisions** — the same reliability signals produce the same trust decision.
+4. **Small public API** — users should not need to understand AegisAI internals to evaluate a model.
+5. **Honest capability boundaries** — experimental or planned features are not presented as production functionality.
 
-📦 Example Output (Planned)
-{
-  "prediction": "Loan Approved",
-  "confidence": 0.82,
-  "uncertainty": 0.18,
-  "ood_risk": 0.12,
-  "safety_flag": false,
-  "trust_score": 0.79,
-  "recommendation": "Safe to auto-approve"
-}
-🛠️ Roadmap
-Phase 1 — ML Trust Core (v0.1)
+## Roadmap
 
- Model wrapper (scikit-learn)
+### v0.1 — ML Reliability Core
 
- Confidence scoring
+- [x] Scikit-learn wrapper
+- [x] Confidence estimation
+- [x] Entropy uncertainty
+- [x] Z-score OOD detection
+- [x] Trust aggregation
+- [x] Recommendation engine
+- [x] Structured reports
+- [x] Tests and CI
 
- Entropy-based uncertainty
+### v0.2 — Extended Reliability
 
- Basic OOD detection
+- [ ] Probability calibration
+- [ ] Additional OOD strategies
+- [ ] Regression support
+- [ ] Better model capability detection
 
- Trust score aggregation
+### v0.3 — LLM and Monitoring
 
-Phase 2 — LLM Trust Core (v0.2)
+- [ ] LLM reliability adapters
+- [ ] Safety evaluation
+- [ ] Prediction logging
+- [ ] Drift monitoring
+- [ ] Trust trend analysis
 
- LLM wrapper
+### v1.0 — Service Layer
 
- Multi-response consistency scoring
+- [ ] FastAPI integration
+- [ ] Docker support
+- [ ] Plugin system
+- [ ] Production deployment guidance
 
- Embedding-based domain similarity
+## Contributing
 
- Toxicity filtering
+Contributions are welcome. Please open an issue before large architectural changes so that the public API can remain coherent as the project grows.
 
- Unified trust score integration
+## License
 
-Phase 3 — Monitoring & Logging (v0.3)
-
- Prediction logging
-
- Drift detection
-
- Trust trend tracking
-
-Phase 4 — API & Deployment (v1.0 Beta)
-
- FastAPI interface
-
- Docker support
-
- Modular plugin system
-
-🚀 Getting Started (Coming Soon)
-
-Installation instructions and usage examples will be added in v0.1.
-
-Stay tuned.
-
-🤝 Contributing
-
-We welcome contributors interested in:
-
-ML reliability
-
-AI safety
-
-Uncertainty estimation
-
-Drift detection
-
-LLM evaluation
-
-MLOps tooling
-
-See CONTRIBUTING.md for details.
-
-Beginner-friendly issues will be labeled:
-
-good first issue
-
-enhancement
-
-research
-
-📌 Project Status
-
-🚧 Week 0 — Foundation & Architecture
-📅 First milestone release: v0.1 (ML Trust Core)
-
-This project is being built in public.
-
-📢 Follow the Build
-
-Development updates will be shared on:
-
-LinkedIn
-
-X (Twitter)
-
-GitHub Discussions
-
-📜 License
-
-MIT License
-
-🧭 Long-Term Goal
-
-To establish an open standard for AI reliability and trust scoring that can be integrated into ML pipelines, APIs, and production systems.
+MIT License. See [LICENSE](LICENSE).
