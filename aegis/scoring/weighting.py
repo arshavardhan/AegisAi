@@ -1,41 +1,43 @@
-"""
-Weighting system for AegisAI trust scoring.
+"""Configurable weights for AegisAI trust scoring."""
 
-Defines configurable importance weights for:
-- confidence
-- uncertainty
-- OOD detection
-- drift detection
-"""
+from __future__ import annotations
 
 from dataclasses import dataclass
 
 
-@dataclass
+@dataclass(frozen=True)
 class ScoreWeights:
-    """
-    Configurable weights for trust score computation.
+    """Weights for normalized reliability signals.
+
+    Drift is intentionally disabled in v0.1 because the prediction
+    pipeline does not yet supply a live drift signal. It will be enabled
+    when monitoring is integrated into the scoring pipeline.
     """
 
-    confidence: float = 0.35
-    uncertainty: float = 0.25
+    confidence: float = 0.50
+    uncertainty: float = 0.30
     ood: float = 0.20
-    drift: float = 0.20
+    drift: float = 0.0
 
     def normalize(self) -> "ScoreWeights":
-        """
-        Normalize weights so they sum to 1.
-        """
-        total = (
-            self.confidence
-            + self.uncertainty
-            + self.ood
-            + self.drift
-        )
+        """Return weights normalized to sum to one."""
+        values = {
+            "confidence": float(self.confidence),
+            "uncertainty": float(self.uncertainty),
+            "ood": float(self.ood),
+            "drift": float(self.drift),
+        }
+
+        if any(value < 0.0 for value in values.values()):
+            raise ValueError("Score weights cannot be negative.")
+
+        total = sum(values.values())
+        if total <= 0.0:
+            raise ValueError("At least one score weight must be greater than zero.")
 
         return ScoreWeights(
-            confidence=self.confidence / total,
-            uncertainty=self.uncertainty / total,
-            ood=self.ood / total,
-            drift=self.drift / total,
+            confidence=values["confidence"] / total,
+            uncertainty=values["uncertainty"] / total,
+            ood=values["ood"] / total,
+            drift=values["drift"] / total,
         )
