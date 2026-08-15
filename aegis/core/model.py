@@ -1,10 +1,4 @@
-"""
-Public API for AegisAI.
-
-AegisModel is the primary entry point for users. It automatically wraps
-supported machine learning models and exposes a unified interface for
-prediction with reliability analysis.
-"""
+"""Public API for AegisAI."""
 
 from __future__ import annotations
 
@@ -17,131 +11,69 @@ from aegis.wrappers.sklearn_wrapper import SklearnWrapper
 
 
 class AegisModel:
-    """
-    Public interface for AegisAI.
+    """Unified reliability interface for supported ML classifiers.
 
-    Example:
-        >>> from sklearn.ensemble import RandomForestClassifier
-        >>> clf = RandomForestClassifier().fit(X_train, y_train)
-        >>> model = AegisModel(clf)
-        >>> model.fit(X_train)
-        >>> report = model.predict(X_test[:1])
+    The wrapped estimator must already be trained. ``fit`` trains AegisAI's
+    reference components (currently the OOD detector); it does not train the
+    underlying estimator.
     """
 
     def __init__(self, model: Any) -> None:
-        """
-        Initialize the Aegis model.
-
-        Args:
-            model:
-                A trained machine learning model.
-        """
         self._model = model
         self._wrapper = self._select_wrapper(model)
         self._pipeline = PredictionPipeline(self._wrapper)
 
     @property
     def model(self) -> Any:
-        """
-        Return the wrapped model.
-        """
+        """Return the wrapped model."""
         return self._model
 
     @property
     def wrapper(self) -> BaseModelWrapper:
-        """
-        Return the selected model wrapper.
-        """
+        """Return the selected model wrapper."""
         return self._wrapper
 
+    @property
+    def is_fitted(self) -> bool:
+        """Whether AegisAI's reliability components are fitted."""
+        return self._pipeline.is_fitted
+
     def fit(self, X_train) -> "AegisModel":
-        """
-        Fit internal AegisAI components.
-
-        Note:
-            This does NOT train the ML model itself.
-            It trains only AegisAI modules (e.g., OOD detector).
-
-        Args:
-            X_train:
-                Training feature matrix.
-
-        Returns:
-            Self.
-        """
+        """Fit AegisAI reference components using training features."""
         self._pipeline.fit(X_train)
         return self
 
     def predict(self, X) -> PredictionReport:
-        """
-        Run the complete AegisAI prediction pipeline.
+        """Analyze the first sample in ``X`` and return its report.
 
-        Args:
-            X:
-                Input samples.
-
-        Returns:
-            PredictionReport containing prediction and reliability
-            metrics.
+        For multiple samples, use ``predict_batch`` to obtain one report
+        per sample.
         """
         return self._pipeline.predict(X)
 
-    def predict_batch(
-        self,
-        X,
-    ) -> list[PredictionReport]:
-        """
-        Predict multiple samples.
-
-        Args:
-            X:
-                Batch of samples.
-
-        Returns:
-            List of PredictionReport objects.
-        """
-        reports = []
-
-        for sample in X:
-            report = self.predict([sample])
-            reports.append(report)
-
-        return reports
+    def predict_batch(self, X) -> list[PredictionReport]:
+        """Analyze every sample in ``X`` and return individual reports."""
+        return self._pipeline.predict_batch(X)
 
     @staticmethod
     def _select_wrapper(model: Any) -> BaseModelWrapper:
-        """
-        Automatically select the appropriate wrapper.
+        """Select a compatible wrapper for the supplied model."""
+        if model is None:
+            raise ValueError("Model cannot be None.")
 
-        Current support:
-            - Scikit-learn
-
-        Future support:
-            - PyTorch
-            - TensorFlow
-            - XGBoost
-            - CatBoost
-            - LightGBM
-            - Hugging Face
-            - Ollama
-            - OpenAI
-        """
         module_name = model.__class__.__module__.lower()
-
         if "sklearn" in module_name:
             return SklearnWrapper(model)
 
         raise ValueError(
             f"Unsupported model type: {model.__class__.__name__}. "
-            "No compatible wrapper found."
+            "Currently supported framework: scikit-learn."
         )
 
     def __repr__(self) -> str:
-        """
-        Developer-friendly representation.
-        """
         return (
             f"{self.__class__.__name__}("
             f"model={self.model.__class__.__name__}, "
-            f"wrapper={self.wrapper.framework})"
+            f"wrapper={self.wrapper.framework}, "
+            f"fitted={self.is_fitted})"
         )
