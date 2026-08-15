@@ -1,13 +1,4 @@
-"""
-Z-Score based Out-of-Distribution (OOD) detector.
-
-This detector learns the feature-wise mean and standard deviation from
-reference data. New samples are evaluated using their absolute
-Z-scores.
-
-A sample is considered OOD if its maximum absolute feature Z-score
-exceeds the configured threshold.
-"""
+"""Z-score based Out-of-Distribution (OOD) detector."""
 
 from __future__ import annotations
 
@@ -19,129 +10,74 @@ from aegis.ood.base import BaseOODDetector
 
 
 class ZScoreOODDetector(BaseOODDetector):
-    """
-    Feature-wise Z-score based OOD detector.
+    """Feature-wise Z-score OOD detector.
+
+    The raw score is the maximum absolute feature Z-score. AegisAI's
+    pipeline converts that unbounded distance into a normalized risk value.
     """
 
-    def __init__(
-        self,
-        threshold: float | None = None,
-    ) -> None:
-        """
-        Initialize the detector.
-
-        Args:
-            threshold:
-                Z-score threshold. If None, the global framework
-                setting is used.
-        """
-        self.threshold = (
-            threshold
-            if threshold is not None
-            else settings.ood_zscore_threshold
+    def __init__(self, threshold: float | None = None) -> None:
+        self.threshold = float(
+            threshold if threshold is not None else settings.ood_zscore_threshold
         )
+        if self.threshold <= 0:
+            raise ValueError("OOD threshold must be greater than zero.")
 
         self._mean: np.ndarray | None = None
         self._std: np.ndarray | None = None
+        self._n_features: int | None = None
 
     @property
     def name(self) -> str:
         return "Z-Score OOD Detector"
 
-    def fit(
-        self,
-        X: ModelInput,
-    ) -> "ZScoreOODDetector":
-        """
-        Learn feature statistics from reference data.
-        """
+    @property
+    def is_fitted(self) -> bool:
+        return self._mean is not None and self._std is not None
+
+    def fit(self, X: ModelInput) -> "ZScoreOODDetector":
         X = self.validate_input(X)
+        if X.shape[0] == 0:
+            raise ValueError("Reference data cannot be empty.")
 
         self._mean = np.mean(X, axis=0)
         self._std = np.std(X, axis=0)
-
-        # Prevent division by zero
         self._std[self._std == 0.0] = 1e-12
-
+        self._n_features = X.shape[1]
         return self
 
-    def score(
-        self,
-        X: ModelInput,
-    ) -> np.ndarray:
-        """
-        Compute OOD scores.
-
-        The score is defined as the maximum absolute feature Z-score
-        for each sample.
-
-        Args:
-            X:
-                Samples to evaluate.
-
-        Returns:
-            One OOD score per sample.
-        """
-        if self._mean is None or self._std is None:
-            raise RuntimeError(
-                "Detector has not been fitted."
+    def _validate_fitted_shape(self, X: np.ndarray) -> None:
+        if self._mean is None or self._std is None or self._n_features is None:
+            raise RuntimeError("Detector has not been fitted.")
+        if X.shape[1] != self._n_features:
+            raise ValueError(
+                f"Expected {self._n_features} features, received {X.shape[1]}."
             )
+
+    def score(self, X: ModelInput) -> np.ndarray:
+        if not self.is_fitted:
+            raise RuntimeError("Detector has not been fitted.")
 
         X = self.validate_input(X)
-
+        self._validate_fitted_shape(X)
         z_scores = np.abs((X - self._mean) / self._std)
-
         return np.max(z_scores, axis=1)
 
-    def predict(
-        self,
-        X: ModelInput,
-    ) -> np.ndarray:
-        """
-        Predict whether samples are out-of-distribution.
+    def predict(self, X: ModelInput) -> np.ndarray:
+        return self.score(X) > self.threshold
 
-        Returns:
-            Boolean NumPy array where:
-
-            True  -> OOD
-
-            False -> In-distribution
-        """
-        scores = self.score(X)
-
-        return scores > self.threshold
-
-    def statistics(self) -> dict[str, np.ndarray]:
-        """
-        Return detector statistics.
-
-        Returns:
-            Dictionary containing learned feature statistics.
-        """
-        if self._mean is None or self._std is None:
-            raise RuntimeError(
-                "Detector has not been fitted."
-            )
+    def statistics(self) -> dict[str, np.ndarray | float]:
+        if not self.is_fitted:
+            raise RuntimeError("Detector has not been fitted.")
 
         return {
             "mean": self._mean.copy(),
             "std": self._std.copy(),
-            "threshold": np.asarray(self.threshold),
+            "threshold": self.threshold,
         }
-
-    @property
-    def is_fitted(self) -> bool:
-        """
-        Whether the detector has been fitted.
-        """
-        return (
-            self._mean is not None
-            and self._std is not None
-        )
 
     def __repr__(self) -> str:
         return (
             f"{self.__class__.__name__}("
-            f"threshold={self.threshold}, "
-            f"is_fitted={self.is_fitted})"
+            f"threshold={self.threshold}, is_fitted={self.is_fitted})"
         )
