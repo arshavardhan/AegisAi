@@ -1,28 +1,7 @@
-"""
-Prediction pipeline for AegisAI.
+"""Prediction pipeline for AegisAI.
 
-This module orchestrates the complete prediction workflow,
-combining model inference with reliability analysis.
-
-Pipeline:
-
-Input
-    ↓
-Model Prediction
-    ↓
-Probability Prediction
-    ↓
-Confidence
-    ↓
-Entropy
-    ↓
-OOD Detection
-    ↓
-Trust Score
-    ↓
-Recommendation
-    ↓
-PredictionReport
+The pipeline orchestrates model inference and reliability analysis for
+classification models with probability support.
 """
 
 from __future__ import annotations
@@ -40,79 +19,77 @@ from aegis.wrappers.base import BaseModelWrapper
 
 
 class PredictionPipeline:
-    """
-    Main prediction pipeline.
-    """
+    """Main AegisAI prediction pipeline."""
 
     def __init__(
         self,
         wrapper: BaseModelWrapper,
         ood_detector: ZScoreOODDetector | None = None,
+        trust_scorer: TrustScorer | None = None,
+        recommendation: RecommendationEngine | None = None,
     ) -> None:
-
         self.wrapper = wrapper
-
         self.confidence = ConfidenceEstimator()
         self.entropy = EntropyEstimator()
-
         self.ood = ood_detector or ZScoreOODDetector()
+        self.trust = trust_scorer or TrustScorer()
+        self.recommendation = recommendation or RecommendationEngine()
 
-        self.trust = TrustScorer()
+        self.wrapper.validate()
+        self._fitted = False
 
-        self.recommendation = RecommendationEngine()
+    @property
+    def is_fitted(self) -> bool:
+        """Whether AegisAI reference components have been fitted."""
+        return self._fitted
 
-    def fit(
-        self,
-        X_train,
-    ) -> None:
-        """
-        Fit internal components.
-
-        Currently only the OOD detector requires fitting.
-        """
+    def fit(self, X_train) -> None:
+        """Fit AegisAI reference components using training features."""
         self.ood.fit(X_train)
+        self._fitted = True
 
-    def predict(
-        self,
-        X,
-    ) -> PredictionReport:
+    def predict(self, X) -> PredictionReport:
+        """Execute reliability analysis for one or more input samples.
+
+        The returned report currently represents the first sample. Use
+        ``predict_batch`` on ``AegisModel`` when individual reports are
+        required for every sample.
         """
-        Execute the complete reliability pipeline.
-        """
+        if not self._fitted:
+            raise PredictionError(
+                "AegisAI has not been fitted. Call fit(X_train) before predict()."
+            )
 
         try:
+            prediction = np.asarray(self.wrapper.predict(X))
+            probabilities = np.asarray(self.wrapper.predict_proba(X), dtype=np.float64)
 
-            prediction = self.wrapper.predict(X)
+            if prediction.shape[0] != probabilities.shape[0]:
+                raise PredictionError(
+                    "Prediction and probability outputs contain different numbers of samples."
+                )
 
-            probabilities = self.wrapper.predict_proba(X)
+            confidence_values = self.confidence.compute(probabilities)
+            entropy_values = self.entropy.compute(probabilities)
+            raw_ood_scores = self.ood.score(X)
+            ood_flags = self.ood.predict(X)
 
-            confidence = float(
-                self.confidence.compute(probabilities)[0]
-            )
+            confidence = float(confidence_values[0])
+            entropy = float(entropy_values[0])
+            raw_ood_score = float(raw_ood_scores[0])
+            is_ood = bool(ood_flags[0])
 
-            entropy = float(
-                self.entropy.compute(probabilities)[0]
-            )
-
-            ood_score = float(
-                self.ood.score(X)[0]
-            )
-
-            is_ood = bool(
-                self.ood.predict(X)[0]
-            )
+            # Convert an unbounded maximum Z-score into a bounded risk
+            # value. A score at or above the configured threshold maps to
+            # maximum OOD risk; values below it scale proportionally.
+            threshold = float(self.ood.threshold)
+            ood_score = min(raw_ood_score / threshold, 1.0) if threshold > 0 else 1.0
 
             trust_result = self.trust.compute(
                 confidence=confidence,
                 entropy=entropy,
                 ood_score=ood_score,
                 is_ood=is_ood,
-            )
-
-            risk_level, recommendation = (
-                self.recommendation.evaluate(
-                    trust_result.trust_score
-                )
             )
 
             return PredictionReport(
@@ -124,23 +101,72 @@ class PredictionPipeline:
                 ood_score=ood_score,
                 drift_score=0.0,
                 trust_score=trust_result.trust_score,
-                risk_level=risk_level,
-                recommendation=recommendation,
+                risk_level=trust_result.risk_level,
+                recommendation=trust_result.recommendation,
+                metadata={
+                    "ood_raw_zscore": raw_ood_score,
+                    "ood_threshold": threshold,
+                },
             )
 
+        except PredictionError:
+            raise
         except Exception as exc:
-            raise PredictionError(
-                f"Prediction pipeline failed: {exc}"
-            ) from exc
+            raise PredictionError(f"Prediction pipeline failed: {exc}") from exc
 
-    def __call__(self, X):
-        """
-        Shortcut for predict().
-        """
+    def predict_batch(self, X) -> list[PredictionReport]:
+        """Return one reliability report per input sample."""
+        if not self._fitted:
+            raise PredictionError(
+                "AegisAI has not been fitted. Call fit(X_train) before predict_batch()."
+            )
+
+        try:
+            predictions = np.asarray(self.wrapper.predict(X))
+            probabilities = np.asarray(self.wrapper.predict_proba(X), dtype=np.float64)
+            raw_ood_scores = self.ood.score(X)
+            ood_flags = self.ood.predict(X)
+            confidence_values = self.confidence.compute(probabilities)
+            entropy_values = self.entropy.compute(probabilities)
+            threshold = float(self.ood.threshold)
+
+            reports: list[PredictionReport] = []
+            for index, prediction in enumerate(predictions):
+                raw_ood = float(raw_ood_scores[index])
+                is_ood = bool(ood_flags[index])
+                ood_score = min(raw_ood / threshold, 1.0) if threshold > 0 else 1.0
+                trust_result = self.trust.compute(
+                    confidence=float(confidence_values[index]),
+                    entropy=float(entropy_values[index]),
+                    ood_score=ood_score,
+                    is_ood=is_ood,
+                )
+                reports.append(
+                    PredictionReport(
+                        prediction=prediction,
+                        confidence=float(confidence_values[index]),
+                        calibrated_confidence=float(confidence_values[index]),
+                        uncertainty=float(entropy_values[index]),
+                        ood=is_ood,
+                        ood_score=ood_score,
+                        drift_score=0.0,
+                        trust_score=trust_result.trust_score,
+                        risk_level=trust_result.risk_level,
+                        recommendation=trust_result.recommendation,
+                        metadata={
+                            "ood_raw_zscore": raw_ood,
+                            "ood_threshold": threshold,
+                        },
+                    )
+                )
+            return reports
+        except PredictionError:
+            raise
+        except Exception as exc:
+            raise PredictionError(f"Batch prediction failed: {exc}") from exc
+
+    def __call__(self, X) -> PredictionReport:
         return self.predict(X)
 
     def __repr__(self) -> str:
-        return (
-            f"{self.__class__.__name__}("
-            f"wrapper={self.wrapper})"
-        )
+        return f"{self.__class__.__name__}(wrapper={self.wrapper})"
