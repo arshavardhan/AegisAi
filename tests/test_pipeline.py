@@ -1,9 +1,11 @@
 import numpy as np
+import pytest
 from sklearn.datasets import make_classification
 from sklearn.linear_model import LogisticRegression
 
 from aegis import AegisModel
 from aegis.core.enums import Recommendation, RiskLevel
+from aegis.core.exceptions import PredictionError
 
 
 def build_model():
@@ -14,13 +16,20 @@ def build_model():
         n_redundant=0,
         random_state=42,
     )
-    classifier = LogisticRegression(max_iter=500, random_state=42)
+
+    classifier = LogisticRegression(
+        max_iter=500,
+        random_state=42,
+    )
+
     classifier.fit(X, y)
+
     return classifier, X
 
 
 def test_end_to_end_prediction_report():
     classifier, X = build_model()
+
     model = AegisModel(classifier).fit(X)
 
     report = model.predict(X[:1])
@@ -29,27 +38,34 @@ def test_end_to_end_prediction_report():
     assert 0.0 <= report.uncertainty <= 1.0
     assert 0.0 <= report.ood_score <= 1.0
     assert 0.0 <= report.trust_score <= 1.0
+
     assert report.risk_level in set(RiskLevel)
     assert report.recommendation in set(Recommendation)
 
 
 def test_batch_prediction_returns_one_report_per_sample():
     classifier, X = build_model()
+
     model = AegisModel(classifier).fit(X)
 
     reports = model.predict_batch(X[:5])
 
     assert len(reports) == 5
-    assert all(0.0 <= report.trust_score <= 1.0 for report in reports)
+
+    assert all(
+        0.0 <= report.trust_score <= 1.0
+        for report in reports
+    )
 
 
 def test_ood_feature_mismatch_is_reported():
     classifier, X = build_model()
+
     model = AegisModel(classifier).fit(X)
 
-    try:
-        model.predict(np.zeros((1, X.shape[1] + 1)))
-    except Exception as exc:
-        assert "features" in str(exc).lower()
-    else:
-        raise AssertionError("Expected feature mismatch to fail")
+    invalid_X = np.zeros(
+        (1, X.shape[1] + 1)
+    )
+
+    with pytest.raises(PredictionError, match="features"):
+        model.predict(invalid_X)

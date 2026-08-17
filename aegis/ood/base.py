@@ -14,28 +14,32 @@ from typing import Any
 
 import numpy as np
 
+from aegis.core.exceptions import OODDetectionError
 from aegis.core.types import ModelInput
 
 
 class BaseOODDetector(ABC):
     """
-    Abstract base class for all Out-of-Distribution detectors.
+    Abstract base class for Out-of-Distribution detectors.
 
-    Each detector should be trained (fit) on reference data and then
-    used to evaluate new samples.
+    Each detector is fitted on reference data and then used to
+    evaluate new samples against that reference distribution.
     """
 
     @property
     @abstractmethod
     def name(self) -> str:
-        """
-        Human-readable detector name.
-        """
+        """Return a human-readable detector name."""
+
+    @property
+    @abstractmethod
+    def is_fitted(self) -> bool:
+        """Return whether the detector has been fitted."""
 
     @abstractmethod
     def fit(self, X: ModelInput) -> "BaseOODDetector":
         """
-        Fit the detector using reference (training) data.
+        Fit the detector using reference data.
 
         Args:
             X:
@@ -43,22 +47,30 @@ class BaseOODDetector(ABC):
 
         Returns:
             The fitted detector.
+
+        Raises:
+            OODDetectionError:
+                If the reference data is invalid.
         """
 
     @abstractmethod
     def score(self, X: ModelInput) -> np.ndarray:
         """
-        Compute an OOD score for each sample.
+        Compute a raw OOD score for each sample.
 
-        Higher scores indicate the sample is more likely to be
-        out-of-distribution.
+        Higher scores indicate greater distance from the
+        reference distribution.
 
         Args:
             X:
                 Input samples.
 
         Returns:
-            One score per sample.
+            One raw OOD score per sample.
+
+        Raises:
+            OODDetectionError:
+                If the detector is not fitted or the input is invalid.
         """
 
     @abstractmethod
@@ -69,23 +81,23 @@ class BaseOODDetector(ABC):
         Returns:
             Boolean NumPy array.
 
-            True  -> Out-of-Distribution
+            True:
+                Out-of-Distribution.
 
-            False -> In-Distribution
+            False:
+                In-Distribution.
         """
 
     def fit_predict(self, X: ModelInput) -> np.ndarray:
         """
-        Convenience method.
-
-        Fits the detector and predicts OOD labels for the same data.
+        Fit the detector and predict OOD labels for the same data.
 
         Args:
             X:
-                Feature matrix.
+                Reference feature matrix.
 
         Returns:
-            Boolean predictions.
+            Boolean OOD predictions.
         """
         self.fit(X)
         return self.predict(X)
@@ -95,37 +107,111 @@ class BaseOODDetector(ABC):
         X: ModelInput,
     ) -> np.ndarray:
         """
-        Convert input into a NumPy array and validate shape.
+        Convert and validate model input.
+
+        The returned value is always a two-dimensional finite
+        float64 NumPy array.
 
         Args:
             X:
                 Input samples.
 
         Returns:
-            Two-dimensional NumPy array.
+            Array with shape ``(n_samples, n_features)``.
 
         Raises:
-            ValueError:
-                If the input has an invalid shape.
+            OODDetectionError:
+                If the input cannot be converted to a valid
+                feature matrix.
         """
-        X = np.asarray(X, dtype=np.float64)
+        try:
+            values = np.asarray(X, dtype=np.float64)
+        except (TypeError, ValueError) as exc:
+            raise OODDetectionError(
+                "OOD input must contain numeric feature values."
+            ) from exc
 
-        if X.ndim == 1:
-            X = X.reshape(1, -1)
+        if values.ndim == 1:
+            values = values.reshape(1, -1)
 
-        if X.ndim != 2:
-            raise ValueError(
+        if values.ndim != 2:
+            raise OODDetectionError(
                 "Expected input of shape "
                 "(n_samples, n_features)."
             )
 
-        return X
+        n_samples, n_features = values.shape
+
+        if n_samples == 0:
+            raise OODDetectionError(
+                "OOD input cannot contain zero samples."
+            )
+
+        if n_features == 0:
+            raise OODDetectionError(
+                "OOD input must contain at least one feature."
+            )
+
+        if not np.all(np.isfinite(values)):
+            raise OODDetectionError(
+                "OOD input cannot contain NaN or infinite values."
+            )
+
+        return values
+
+    def validate_feature_count(
+        self,
+        X: np.ndarray,
+        expected_features: int,
+    ) -> None:
+        """
+        Validate that input features match the reference feature count.
+
+        Args:
+            X:
+                Validated two-dimensional input array.
+
+            expected_features:
+                Number of features used during fitting.
+
+        Raises:
+            OODDetectionError:
+                If the feature count does not match.
+        """
+        if expected_features <= 0:
+            raise OODDetectionError(
+                "Expected feature count must be greater than zero."
+            )
+
+        if X.shape[1] != expected_features:
+            raise OODDetectionError(
+                "Feature count mismatch: expected "
+                f"{expected_features} features, got "
+                f"{X.shape[1]}."
+            )
+
+    def require_fitted(self) -> None:
+        """
+        Ensure the detector has been fitted.
+
+        Raises:
+            OODDetectionError:
+                If ``fit()`` has not been called.
+        """
+        if not self.is_fitted:
+            raise OODDetectionError(
+                "OOD detector has not been fitted. "
+                "Call fit(X_train) before score() or predict()."
+            )
 
     def __call__(self, X: ModelInput) -> np.ndarray:
-        """
-        Shortcut for predict().
-        """
+        """Shortcut for ``predict(X)``."""
         return self.predict(X)
 
     def __repr__(self) -> str:
-        return f"{self.__class__.__name__}(name='{self.name}')"
+        """Return a developer-friendly representation."""
+        return (
+            f"{self.__class__.__name__}("
+            f"name='{self.name}', "
+            f"fitted={self.is_fitted})"
+        )

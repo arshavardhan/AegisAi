@@ -5,23 +5,65 @@ from __future__ import annotations
 import numpy as np
 
 from aegis.config import settings
+from aegis.core.exceptions import OODDetectionError
 from aegis.core.types import ModelInput
 from aegis.ood.base import BaseOODDetector
 
 
 class ZScoreOODDetector(BaseOODDetector):
-    """Feature-wise Z-score OOD detector.
+    """Feature-wise Z-score based OOD detector.
 
-    The raw score is the maximum absolute feature Z-score. AegisAI's
-    pipeline converts that unbounded distance into a normalized risk value.
+    The detector estimates the reference distribution from training
+    data and calculates the maximum absolute feature-wise Z-score
+    for each new sample.
+
+    The raw score is an unbounded distance:
+
+        raw_score = max(abs((x - mean) / std))
+
+    A sample is considered OOD when:
+
+        raw_score > threshold
+
+    The detector deliberately does not normalize the raw score.
+    Normalization into an OOD risk value in [0, 1] belongs to the
+    reliability pipeline.
     """
 
     def __init__(self, threshold: float | None = None) -> None:
-        self.threshold = float(
-            threshold if threshold is not None else settings.ood_zscore_threshold
+        """Initialize the detector.
+
+        Args:
+            threshold:
+                Z-score threshold used for the OOD decision.
+                If omitted, the configured default is used.
+
+        Raises:
+            OODDetectionError:
+                If the threshold is invalid.
+        """
+        configured_threshold = (
+            threshold
+            if threshold is not None
+            else settings.ood_zscore_threshold
         )
-        if self.threshold <= 0:
-            raise ValueError("OOD threshold must be greater than zero.")
+
+        try:
+            self.threshold = float(configured_threshold)
+        except (TypeError, ValueError) as exc:
+            raise OODDetectionError(
+                "OOD threshold must be numeric."
+            ) from exc
+
+        if not np.isfinite(self.threshold):
+            raise OODDetectionError(
+                "OOD threshold must be finite."
+            )
+
+        if self.threshold <= 0.0:
+            raise OODDetectionError(
+                "OOD threshold must be greater than zero."
+            )
 
         self._mean: np.ndarray | None = None
         self._std: np.ndarray | None = None
@@ -29,55 +71,161 @@ class ZScoreOODDetector(BaseOODDetector):
 
     @property
     def name(self) -> str:
+        """Return the detector name."""
         return "Z-Score OOD Detector"
 
     @property
     def is_fitted(self) -> bool:
-        return self._mean is not None and self._std is not None
+        """Return whether the detector has been fitted."""
+        return (
+            self._mean is not None
+            and self._std is not None
+            and self._n_features is not None
+        )
 
     def fit(self, X: ModelInput) -> "ZScoreOODDetector":
-        X = self.validate_input(X)
-        if X.shape[0] == 0:
-            raise ValueError("Reference data cannot be empty.")
+        """Fit the detector using reference data.
 
-        self._mean = np.mean(X, axis=0)
-        self._std = np.std(X, axis=0)
-        self._std[self._std == 0.0] = 1e-12
-        self._n_features = X.shape[1]
-        return self
+        Args:
+            X:
+                Reference feature matrix.
 
-    def _validate_fitted_shape(self, X: np.ndarray) -> None:
-        if self._mean is None or self._std is None or self._n_features is None:
-            raise RuntimeError("Detector has not been fitted.")
-        if X.shape[1] != self._n_features:
-            raise ValueError(
-                f"Expected {self._n_features} features, received {X.shape[1]}."
+        Returns:
+            The fitted detector.
+
+        Raises:
+            OODDetectionError:
+                If the reference data is invalid.
+        """
+        values = self.validate_input(X)
+
+        if values.shape[0] < 2:
+            raise OODDetectionError(
+                "At least two reference samples are required "
+                "to estimate feature standard deviations."
             )
 
-    def score(self, X: ModelInput) -> np.ndarray:
-        if not self.is_fitted:
-            raise RuntimeError("Detector has not been fitted.")
+        mean = np.mean(values, axis=0)
+        std = np.std(values, axis=0)
 
-        X = self.validate_input(X)
-        self._validate_fitted_shape(X)
-        z_scores = np.abs((X - self._mean) / self._std)
-        return np.max(z_scores, axis=1)
+        if not np.all(np.isfinite(mean)):
+            raise OODDetectionError(
+                "Reference data produced invalid feature means."
+            )
+
+        if not np.all(np.isfinite(std)):
+            raise OODDetectionError(
+                "Reference data produced invalid feature standard deviations."
+            )
+
+        # Constant features contain no useful information about
+        # distance from the reference distribution. A scale of 1.0
+        # prevents division by zero while keeping such features
+        # neutral rather than creating artificially large scores.
+        std = np.where(std == 0.0, 1.0, std)
+
+        self._mean = mean
+        self._std = std
+        self._n_features = values.shape[1]
+
+        return self
+
+    def score(self, X: ModelInput) -> np.ndarray:
+        """Compute the raw OOD distance for each sample.
+
+        Args:
+            X:
+                Input samples.
+
+        Returns:
+            One unbounded raw OOD score per sample.
+
+        Raises:
+            OODDetectionError:
+                If the detector is not fitted or the input is invalid.
+        """
+        self.require_fitted()
+
+        values = self.validate_input(X)
+
+        if self._n_features is None:
+            raise OODDetectionError(
+                "Detector feature configuration is unavailable."
+            )
+
+        self.validate_feature_count(
+            values,
+            self._n_features,
+        )
+
+        if self._mean is None or self._std is None:
+            raise OODDetectionError(
+                "Detector parameters are unavailable."
+            )
+
+        z_scores = np.abs(
+            (values - self._mean) / self._std
+        )
+
+        raw_scores = np.max(
+            z_scores,
+            axis=1,
+        )
+
+        if not np.all(np.isfinite(raw_scores)):
+            raise OODDetectionError(
+                "OOD calculation produced NaN or infinite scores."
+            )
+
+        return raw_scores.astype(
+            np.float64,
+            copy=False,
+        )
 
     def predict(self, X: ModelInput) -> np.ndarray:
-        return self.score(X) > self.threshold
+        """Predict whether each sample is out-of-distribution.
+
+        Args:
+            X:
+                Input samples.
+
+        Returns:
+            Boolean array where ``True`` indicates OOD.
+        """
+        raw_scores = self.score(X)
+
+        return (
+            raw_scores > self.threshold
+        ).astype(bool)
 
     def statistics(self) -> dict[str, np.ndarray | float]:
-        if not self.is_fitted:
-            raise RuntimeError("Detector has not been fitted.")
+        """Return fitted detector statistics.
+
+        Returns:
+            Dictionary containing the reference means, standard
+            deviations, and configured threshold.
+
+        Raises:
+            OODDetectionError:
+                If the detector has not been fitted.
+        """
+        self.require_fitted()
+
+        if self._mean is None or self._std is None:
+            raise OODDetectionError(
+                "Detector parameters are unavailable."
+            )
 
         return {
             "mean": self._mean.copy(),
             "std": self._std.copy(),
-            "threshold": self.threshold,
+            "threshold": float(self.threshold),
         }
 
     def __repr__(self) -> str:
+        """Return a developer-friendly representation."""
         return (
             f"{self.__class__.__name__}("
-            f"threshold={self.threshold}, is_fitted={self.is_fitted})"
+            f"threshold={self.threshold}, "
+            f"is_fitted={self.is_fitted})"
         )

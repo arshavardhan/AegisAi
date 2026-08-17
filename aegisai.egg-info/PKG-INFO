@@ -1,0 +1,264 @@
+Metadata-Version: 2.4
+Name: aegisai
+Version: 0.1.0
+Summary: A lightweight reliability and trust layer for machine-learning predictions.
+Author: Harsha Vardhan
+License: MIT License
+        
+        Copyright (c) 2026 HARSHA VARDHAN
+        
+        Permission is hereby granted, free of charge, to any person obtaining a copy
+        of this software and associated documentation files (the "Software"), to deal
+        in the Software without restriction, including without limitation the rights
+        to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+        copies of the Software, and to permit persons to whom the Software is
+        furnished to do so, subject to the following conditions:
+        
+        The above copyright notice and this permission notice shall be included in all
+        copies or substantial portions of the Software.
+        
+        THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+        IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+        FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+        AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+        LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+        OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+        SOFTWARE.
+        
+Project-URL: Homepage, https://github.com/arshavardhan/AegisAi
+Project-URL: Repository, https://github.com/arshavardhan/AegisAi
+Requires-Python: <3.14,>=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: numpy<3.0,>=1.24
+Requires-Dist: pandas<3.0,>=2.0
+Requires-Dist: pydantic<3.0,>=2.0
+Requires-Dist: scikit-learn<2.0,>=1.3
+Provides-Extra: dev
+Requires-Dist: pytest<10.0,>=8.0; extra == "dev"
+Requires-Dist: pytest-cov<8.0,>=5.0; extra == "dev"
+Dynamic: license-file
+
+# 🛡️ AegisAI
+
+**A lightweight, modular reliability and trust layer for machine-learning predictions.**
+
+AegisAI evaluates a model's prediction using multiple signals—confidence, predictive uncertainty, and out-of-distribution (OOD) risk—before exposing a structured trust report to downstream applications.
+
+> **AegisAI does not replace your model. It evaluates the reliability of its predictions.**
+
+## Why AegisAI?
+
+A model can return a prediction even when it is uncertain or when the input differs substantially from the data it learned from. AegisAI adds an explicit reliability layer:
+
+```text
+Input
+  ↓
+ML Model
+  ↓
+AegisAI Reliability Engine
+  ├── Confidence
+  ├── Entropy / Uncertainty
+  └── OOD Detection
+  ↓
+Trust Score
+  ↓
+Risk Level + Recommendation
+  ↓
+Structured Prediction Report
+```
+
+## Current status
+
+**v0.1.0 — ML Reliability Core**
+
+The current implementation focuses deliberately on classification models with probability support, primarily scikit-learn estimators.
+
+### Implemented
+
+- Scikit-learn model wrapper
+- Maximum-probability confidence estimation
+- Normalized Shannon entropy
+- Z-score based OOD detection
+- Normalized OOD risk for trust scoring
+- Configurable trust-score aggregation
+- Risk classification
+- Action recommendation
+- Structured Pydantic prediction reports
+- Batch prediction
+- Feature-shape validation
+- Automated tests
+- GitHub Actions CI
+- Python package configuration
+
+### Planned
+
+- Model probability calibration
+- Additional OOD detectors
+- Regression reliability
+- LLM reliability adapters
+- Safety evaluation modules
+- Production drift monitoring
+- FastAPI service
+- Docker deployment
+- Plugin architecture
+
+These are intentionally outside the v0.1 core so that the current API remains small and testable.
+
+## Installation
+
+Clone the repository and install it in editable mode:
+
+```bash
+pip install -e ".[dev]"
+```
+
+Or install the runtime package only:
+
+```bash
+pip install .
+```
+
+## Quick start
+
+```python
+from sklearn.datasets import load_iris
+from sklearn.linear_model import LogisticRegression
+
+from aegis import AegisModel
+
+X, y = load_iris(return_X_y=True)
+
+classifier = LogisticRegression(max_iter=500)
+classifier.fit(X, y)
+
+model = AegisModel(classifier)
+model.fit(X)
+
+report = model.predict(X[:1])
+
+print(report.summary())
+print(report.to_json())
+```
+
+Example report fields:
+
+```text
+prediction
+confidence
+uncertainty
+ood
+ood_score
+trust_score
+risk_level
+recommendation
+```
+
+For multiple samples:
+
+```python
+reports = model.predict_batch(X[:10])
+```
+
+## Trust scoring
+
+AegisAI combines normalized reliability signals into a score in `[0, 1]`.
+
+The v0.1 default weights are:
+
+| Signal | Weight |
+|---|---:|
+| Confidence | 0.50 |
+| Uncertainty | 0.30 |
+| OOD risk | 0.20 |
+
+Drift is **not** included in the v0.1 score because live drift monitoring is not yet connected to the prediction pipeline.
+
+## OOD detection
+
+The current detector learns feature-wise mean and standard deviation from reference data and calculates the maximum absolute feature Z-score for each new sample.
+
+The raw Z-score is intentionally kept separate from the normalized OOD risk used by the trust scorer.
+
+This is a lightweight baseline detector, not a claim of universal OOD detection performance.
+
+## Project structure
+
+```text
+AegisAi/
+├── aegis/
+│   ├── config/
+│   ├── core/
+│   ├── drift/
+│   ├── ood/
+│   ├── recommendation/
+│   ├── scoring/
+│   ├── uncertainty/
+│   └── wrappers/
+├── tests/
+├── .github/workflows/
+├── pyproject.toml
+├── LICENSE
+└── README.md
+```
+
+## Development
+
+Run the test suite with:
+
+```bash
+pytest
+```
+
+GitHub Actions runs the tests against Python 3.10, 3.11, and 3.12.
+
+## Design principles
+
+1. **Model-agnostic core** — reliability logic should not depend on a specific estimator implementation.
+2. **Explicit signals** — confidence, uncertainty, and distribution risk remain separately observable.
+3. **Deterministic decisions** — the same reliability signals produce the same trust decision.
+4. **Small public API** — users should not need to understand AegisAI internals to evaluate a model.
+5. **Honest capability boundaries** — experimental or planned features are not presented as production functionality.
+
+## Roadmap
+
+### v0.1 — ML Reliability Core
+
+- [x] Scikit-learn wrapper
+- [x] Confidence estimation
+- [x] Entropy uncertainty
+- [x] Z-score OOD detection
+- [x] Trust aggregation
+- [x] Recommendation engine
+- [x] Structured reports
+- [x] Tests and CI
+
+### v0.2 — Extended Reliability
+
+- [ ] Probability calibration
+- [ ] Additional OOD strategies
+- [ ] Regression support
+- [ ] Better model capability detection
+
+### v0.3 — LLM and Monitoring
+
+- [ ] LLM reliability adapters
+- [ ] Safety evaluation
+- [ ] Prediction logging
+- [ ] Drift monitoring
+- [ ] Trust trend analysis
+
+### v1.0 — Service Layer
+
+- [ ] FastAPI integration
+- [ ] Docker support
+- [ ] Plugin system
+- [ ] Production deployment guidance
+
+## Contributing
+
+Contributions are welcome. Please open an issue before large architectural changes so that the public API can remain coherent as the project grows.
+
+## License
+
+MIT License. See [LICENSE](LICENSE).

@@ -1,11 +1,14 @@
 """
-Base wrapper interface for all AI models supported by AegisAI.
+Base wrapper interface for AegisAI model integrations.
 
-Every model integration (scikit-learn, PyTorch, TensorFlow, XGBoost,
-LLMs, etc.) must inherit from BaseModelWrapper.
+AegisAI uses wrappers to provide a consistent interface between
+different machine-learning frameworks and the reliability pipeline.
 
-The wrapper provides a unified interface so the rest of the framework
-never needs to know which ML library is being used.
+For the current classification pipeline, a supported wrapper must
+provide:
+
+    predict()
+    predict_proba()
 """
 
 from __future__ import annotations
@@ -21,96 +24,116 @@ from aegis.core.types import ModelInput, Prediction, ProbabilityVector
 
 class BaseModelWrapper(ABC):
     """
-    Abstract base class for all model wrappers.
+    Abstract base class for AegisAI model wrappers.
 
-    Every supported AI framework should implement this interface.
+    A wrapper adapts an underlying trained model to the interface
+    required by the AegisAI reliability pipeline.
 
     Attributes:
         model:
-            The underlying trained model instance.
+            The underlying model instance.
     """
 
     def __init__(self, model: Any) -> None:
-        self._model = model
-
         if model is None:
             raise ModelCompatibilityError(
                 "Model instance cannot be None."
             )
 
+        self._model = model
+
     @property
     def model(self) -> Any:
-        """
-        Return the wrapped model instance.
-        """
+        """Return the wrapped model instance."""
         return self._model
 
     @property
     @abstractmethod
     def framework(self) -> str:
         """
-        Name of the underlying ML framework.
+        Return the name of the underlying ML framework.
 
         Example:
             scikit-learn
-            pytorch
-            tensorflow
         """
-
-    @property
-    def supports_predict_proba(self) -> bool:
-        """
-        Whether the wrapped model implements predict_proba().
-        """
-        return callable(getattr(self.model, "predict_proba", None))
-
-    @property
-    def supports_decision_function(self) -> bool:
-        """
-        Whether the wrapped model implements decision_function().
-        """
-        return callable(getattr(self.model, "decision_function", None))
 
     @property
     def supports_predict(self) -> bool:
-        """
-        Whether the wrapped model implements predict().
-        """
-        return callable(getattr(self.model, "predict", None))
+        """Return whether the model implements predict()."""
+        return callable(
+            getattr(
+                self.model,
+                "predict",
+                None,
+            )
+        )
+
+    @property
+    def supports_predict_proba(self) -> bool:
+        """Return whether the model implements predict_proba()."""
+        return callable(
+            getattr(
+                self.model,
+                "predict_proba",
+                None,
+            )
+        )
+
+    @property
+    def supports_decision_function(self) -> bool:
+        """Return whether the model implements decision_function()."""
+        return callable(
+            getattr(
+                self.model,
+                "decision_function",
+                None,
+            )
+        )
 
     @abstractmethod
-    def predict(self, X: ModelInput) -> Prediction | np.ndarray:
+    def predict(
+        self,
+        X: ModelInput,
+    ) -> Prediction | np.ndarray:
         """
-        Predict labels.
+        Generate model predictions.
 
         Args:
             X:
                 Input samples.
 
         Returns:
-            Model predictions.
+            One prediction per input sample.
         """
 
     @abstractmethod
-    def predict_proba(self, X: ModelInput) -> ProbabilityVector:
+    def predict_proba(
+        self,
+        X: ModelInput,
+    ) -> ProbabilityVector:
         """
-        Predict class probabilities.
+        Generate class probabilities.
 
         Args:
             X:
                 Input samples.
 
         Returns:
-            Probability vector.
+            Probability matrix with shape:
+
+                (n_samples, n_classes)
 
         Raises:
-            NotImplementedError:
+            ModelCompatibilityError:
                 If probability prediction is unavailable.
         """
 
-    def decision_function(self, X: ModelInput) -> np.ndarray:
+    def decision_function(
+        self,
+        X: ModelInput,
+    ) -> np.ndarray:
         """
-        Return decision scores if supported.
+        Generate decision scores when supported.
 
         Args:
             X:
@@ -120,36 +143,50 @@ class BaseModelWrapper(ABC):
             Decision scores.
 
         Raises:
-            NotImplementedError:
-                If the wrapped model does not support
-                decision_function().
+            ModelCompatibilityError:
+                If decision_function() is unavailable.
         """
         if not self.supports_decision_function:
-            raise NotImplementedError(
-                f"{self.framework} does not support "
+            raise ModelCompatibilityError(
+                f"{self.framework} model does not support "
                 "decision_function()."
             )
 
-        return self.model.decision_function(X)
+        try:
+            return np.asarray(
+                self.model.decision_function(X)
+            )
+        except Exception as exc:
+            raise ModelCompatibilityError(
+                f"{self.framework} decision_function() failed: "
+                f"{exc}"
+            ) from exc
 
     def validate(self) -> None:
         """
-        Validate that the wrapped model satisfies the minimum API
-        required by AegisAI.
+        Validate the minimum model API required by AegisAI.
+
+        For the current classification reliability pipeline,
+        both predict() and predict_proba() are required.
 
         Raises:
             ModelCompatibilityError:
-                If the model is incompatible.
+                If the model does not satisfy the required API.
         """
         if not self.supports_predict:
             raise ModelCompatibilityError(
-                "Wrapped model must implement predict()."
+                f"{self.framework} model must implement predict()."
+            )
+
+        if not self.supports_predict_proba:
+            raise ModelCompatibilityError(
+                f"{self.framework} model must implement "
+                "predict_proba() for the current "
+                "classification reliability pipeline."
             )
 
     def __repr__(self) -> str:
-        """
-        Developer-friendly representation.
-        """
+        """Return a developer-friendly representation."""
         return (
             f"{self.__class__.__name__}("
             f"framework='{self.framework}', "

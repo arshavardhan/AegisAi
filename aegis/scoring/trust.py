@@ -1,10 +1,8 @@
 """
 Trust scoring engine for AegisAI.
 
-The trust scorer is intentionally small and deterministic: it accepts
-already-normalized reliability signals, delegates aggregation to
-``ScoreAggregator``, and converts the resulting score into a risk level
-and recommendation.
+The trust scorer combines normalized reliability signals into a trust
+score and delegates the final policy decision to RecommendationEngine.
 """
 
 from __future__ import annotations
@@ -12,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from aegis.core.enums import Recommendation, RiskLevel
+from aegis.core.exceptions import ValidationError
+from aegis.recommendation.engine import RecommendationEngine
 from aegis.scoring.aggregator import ScoreAggregator, ScoreInputs
 
 
@@ -27,26 +27,55 @@ class TrustResult:
 class TrustScorer:
     """Convert reliability signals into a trust decision."""
 
-    def __init__(self, aggregator: ScoreAggregator | None = None) -> None:
-        self.aggregator = aggregator or ScoreAggregator()
+    def __init__(
+        self,
+        aggregator: ScoreAggregator | None = None,
+        recommendation_engine: RecommendationEngine | None = None,
+    ) -> None:
+        """Initialize the trust scorer.
 
-    def evaluate(self, inputs: ScoreInputs) -> TrustResult:
-        """Aggregate reliability signals and classify the result."""
+        Args:
+            aggregator:
+                Score aggregation engine.
+
+            recommendation_engine:
+                Policy engine responsible for converting trust scores
+                into risk levels and recommendations.
+        """
+        self.aggregator = (
+            aggregator
+            if aggregator is not None
+            else ScoreAggregator()
+        )
+
+        self.recommendation_engine = (
+            recommendation_engine
+            if recommendation_engine is not None
+            else RecommendationEngine()
+        )
+
+    def evaluate(
+        self,
+        inputs: ScoreInputs,
+    ) -> TrustResult:
+        """Aggregate reliability signals and classify the result.
+
+        Args:
+            inputs:
+                Normalized reliability signals.
+
+        Returns:
+            Final trust result.
+        """
         score = self.aggregator.aggregate(inputs)
 
-        if score >= 0.85:
-            risk = RiskLevel.LOW
-            recommendation = Recommendation.AUTO_APPROVE
-        elif score >= 0.60:
-            risk = RiskLevel.MEDIUM
-            recommendation = Recommendation.HUMAN_REVIEW
-        else:
-            risk = RiskLevel.HIGH
-            recommendation = Recommendation.REJECT
+        risk_level, recommendation = (
+            self.recommendation_engine.evaluate(score)
+        )
 
         return TrustResult(
             trust_score=score,
-            risk_level=risk,
+            risk_level=risk_level,
             recommendation=recommendation,
         )
 
@@ -57,21 +86,79 @@ class TrustScorer:
         entropy: float,
         ood_score: float,
         is_ood: bool,
-        drift_score: float = 0.0,
+        drift_score: float | None = None,
     ) -> TrustResult:
-        """Convenience API for pipeline callers.
+        """Compute a trust decision from reliability signals.
 
-        ``ood_score`` must already be normalized to ``[0, 1]``. The OOD
-        boolean is treated as a hard risk signal when it is true.
+        Args:
+            confidence:
+                Maximum predicted probability in [0, 1].
+
+            entropy:
+                Normalized predictive entropy in [0, 1].
+
+            ood_score:
+                Normalized OOD risk in [0, 1].
+
+            is_ood:
+                Whether the OOD detector classified the sample
+                as out-of-distribution.
+
+            drift_score:
+                Optional normalized drift risk in [0, 1].
+                ``None`` means drift has not been measured.
+
+        Returns:
+            Final trust result.
+
+        Raises:
+            ValidationError:
+                If an input cannot be converted to a numeric value.
         """
-        normalized_ood = 1.0 if is_ood else float(ood_score)
-        inputs = ScoreInputs(
-            confidence=float(confidence),
-            uncertainty=float(entropy),
-            ood=normalized_ood,
-            drift=float(drift_score),
+        try:
+            normalized_confidence = float(confidence)
+            normalized_entropy = float(entropy)
+            normalized_ood = float(ood_score)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                "Trust-score inputs must be numeric."
+            ) from exc
+
+        # OOD classification is a hard risk signal.
+        if is_ood:
+            normalized_ood = 1.0
+
+        normalized_drift = (
+            None
+            if drift_score is None
+            else float(drift_score)
         )
+
+        inputs = ScoreInputs(
+            confidence=normalized_confidence,
+            uncertainty=normalized_entropy,
+            ood_risk=normalized_ood,
+            drift=(
+                0.0
+                if normalized_drift is None
+                else normalized_drift
+            ),
+        )
+
         return self.evaluate(inputs)
 
-    def __call__(self, inputs: ScoreInputs) -> TrustResult:
+    def __call__(
+        self,
+        inputs: ScoreInputs,
+    ) -> TrustResult:
+        """Evaluate normalized reliability signals."""
         return self.evaluate(inputs)
+
+    def __repr__(self) -> str:
+        """Return a developer-friendly representation."""
+        return (
+            f"{self.__class__.__name__}("
+            f"aggregator={self.aggregator!r}, "
+            f"recommendation_engine="
+            f"{self.recommendation_engine!r})"
+        )
